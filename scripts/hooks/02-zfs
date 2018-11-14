@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Build ZFS into kernel module, must run after extract script
+
+set -e
+set -x
+cd $(dirname $0)/../..
+source scripts/build-common
+source scripts/version
+
+: ${ZFS_URL:="https://github.com/zfsonlinux/zfs/releases/download/zfs-0.8.0-rc2/zfs-0.8.0-rc2.tar.gz"}
+: ${ZFS_SHA256:="66fa2aa270586dc3c0f64d08b83f126f288163d6fb622e8d85e3e86a118a2082"}
+
+# This could be moved into common later
+check()
+{
+    local hash=$1
+    local file=$2
+
+    if [ ! -e "$file" ]; then
+        return 1
+    fi
+
+    CURRENT=$(sha256sum $file | awk '{print $1}')
+
+    [ "$hash" = "$CURRENT" ]
+}
+
+download()
+{
+    mkdir -p ${ARTIFACTS}
+
+    local url=$2
+    local file=${ARTIFACTS}/$(basename $2)
+    local hash=$1
+
+    if ! check $hash $file; then
+        curl -sL $url > $file
+    fi
+
+    if ! check $hash $file; then
+        echo "ERROR: $file does not match checksum $hash, got $CURRENT" 1>&2
+        return 1
+    fi
+}
+
+download ${ZFS_SHA256} ${ZFS_URL}
+
+cd ${BUILD}
+
+ZFS=$(basename ${ZFS_URL})
+ZFS_DIR=${ZFS/.tar.*//}
+
+if [ ! -e ${ZFS_DIR} ]; then
+    echo Extracting ${ARTIFACTS}/${ZFS}
+    TEMP=$(mktemp -d -p ${BUILD})
+    mkdir ${TEMP}/${ZFS_DIR}
+    trap "rm -rf ${TEMP}" exit
+
+    tar xf ${ARTIFACTS}/${ZFS} -C ${TEMP}/${ZFS_DIR} --strip-components=1
+    mv ${TEMP}/${ZFS_DIR} ${ZFS_DIR}
+fi
+
+KERNEL_DIR=${VERSION}
+
+cd ${BUILD}
+cd ${KERNEL_DIR}
+make prepare scripts
+cd ../
+cd ${ZFS_DIR}
+./configure \
+    --enable-linux-builtin=yes \
+    --with-linux=${BUILD}/${KERNEL_DIR} \
+    --with-linux-obj=${BUILD}/${KERNEL_DIR} 
+./copy-builtin ${BUILD}/${KERNEL_DIR}
+#make
+#make install
+
+echo "CONFIG_SPL=y" >> ${BUILD}/${KERNEL_DIR}/.config
+echo "CONFIG_ZFS=y" >> ${BUILD}/${KERNEL_DIR}/.config
+
